@@ -1,0 +1,553 @@
+
+#=====================================================================================================================#
+# Config syntax
+#=====================================================================================================================#
+OpenColorIO是主要控制的核心配置文件，通常命名为config.ocio
+这章节只会说明以什么样的语法来写 ocio 文件（如：什么transform是可用的，什么部分是可选的）
+这章节不会帮助你写一个有用的配置文件，有关完整的配置实例，以及如何适应facitilies workflow，
+请参阅Configurations部分
+
+	#--------------#
+	# YAML basics -#
+	#--------------#
+		使用YAML语言来写ocio的配置文件（注意：缩进很重要）
+
+
+	#---------------------#
+	# Checking for errors #
+	#---------------------#
+		使用ociocheck命令行工具验证您的配置。 它会通知你YAML语法错误，但更重要的是它执行各种OCIO特定的“sanity checks”。		
+		有关更多信息，请参阅ociocheck的概述
+
+
+	#-----------------#
+	# Config sections #
+	#-----------------#
+		--------------------
+		ocio_profile_version
+		--------------------
+			Required（必须的）
+			按照惯例，profile以ocio_profile_version开头。	
+			这是一个整数，指定使用OCIO配置语法的哪个版本。
+			目前只有一个OCIO配置文件版本，因此值总是1（一）
+			========== ocio_profile_version =========
+			ocio_profile_version: 1
+
+		-----------
+		search_path
+		-----------
+			Optional（可选的）
+				默认值为空搜索路径。
+				search_path是以冒号分隔的目录列表。 检查每个目录以便定位文件（例如LUT）。
+				这个工作非常类似于UNIX $ PATH env-var的可执行文件路径。
+				配置的一般目录结构是：
+				=====================
+				config.ocio
+				luts/
+				  lg10_to_lnf.spi1d
+				  lg10_to_p3.3dl
+
+				为此，我们将设置search_path如下：
+				=========================================
+				search_path: "luts"
+
+				在颜色空间定义中，我们可能有一个FileTransform引用LUT lg10_to_lnf.spi1d。 
+				它将在luts目录中查找，相对于config.ocio文件的位置。
+				路径可以是相对路径（对于包含config.ocio的目录），也可以是绝对路径（例如/mnt/path/to/my/luts）
+				可以指定多个路径，包括相对路径和绝对路径的混合。 每个路径用冒号分隔：
+				=========================================
+				search_path: "/mnt/path/to/my/luts:luts"
+
+				最后，路径可引用OCIO的context变量：
+				============================================
+				search_path: "/shots/show/$SHOT/cc/data:luts"
+
+				这允许一些巧妙的设置，例如每个镜头（per-shot）的LUT具有默认的回退（fallbacks）。
+				有关详细信息，请参阅Looks中的示例
+
+
+		-------------
+		strictparsing
+		-------------
+			Optional（可选的）
+				有效值为true和false。 默认值为true（假设配置存在）：
+				===================
+				strictparsing: true
+				OCIO提供了一种应用程序从文件名中提取colorspace的机制（parseColorSpaceFromString API方法）
+				因此，对于像example_render_v001_lnf.0001.exr这样的文件，它将确定颜色空间lnf
+				（它是包含颜色空间名称的最右子字符串）
+
+				然而，如果不能确定颜色空间和strictparsing：true，它会产生一个错误。
+				如果不能确定colorspace和strictparsing：false，将使用默认role。 这允许未处理的图像以“non-color managed”模式操作。
+
+				应用程序作者应该注意：当没有配置（例如通过$ OCIO）时，默认内部配置文件指定
+				strictparsing = false，默认colorspace role是raw。
+
+				这意味着传递给OCIO的任何字符串将被解析为默认raw。 
+				这是很好的，因为在没有配置时，从应用程序的角度来看本质上回到“non-color managed”。
+
+		----
+		luma
+		----
+			Deprecated（已弃用）， Optional（可选的）
+				默认是由ASC指定的Rec.709：
+				==============================
+				luma: [0.2126, 0.7152, 0.0722]
+				这些是亮度系数，可以由OCIO支持应用在调整饱和度时使用（例如：在图像观看器中显示单个通道时）
+
+				注意：
+				虽然API方法尚未正式弃用，但luma是来自Imageworks的内部闭源代码OCIO的传统选项。			
+				OCIO库中的任何位置都不会考虑亮度值。
+				此外，支持OCIO的极少数（如果有的话）应用程序也将关心该值。
+
+		-----
+		roles
+		-----
+			Required（必须的）
+				‘roles’是colorspaces的别名，应用程序可以使用它来执行任务特定的颜色变换，而不需要用户按名称选择colorspace。
+
+				例如，Nuke节点OCIOLogConvert：不是要求用户选择适当的 log colorspace，
+					  节点执行scene_linear和compositing_log之间的转换，
+					  并且OCIO配置指定项目适当的颜色空间
+					  这简化了艺术家的操作，因为他们不必记住当前项目的正确的log colorspace - OCIOLogConvert总是做正确的事情。
+
+				典型的 roles 定义如下所示，取自spi-vfx示例配置：
+				==============================
+				roles:
+				  color_picking: cpf
+				  color_timing: lg10
+				  compositing_log: lgf
+				  data: ncf
+				  default: ncf
+				  matte_paint: vd8
+				  reference: lnf
+				  scene_linear: lnf
+				  texture_paint: dt16
+				此示例中的所有值（例如cpf，lg10和ncf）都是指在colorspaces部分中稍后定义的颜色空间。
+
+				所有roles的说明：请注意，应用程序可以解释或使用这些不同的roles。
+					1：color_picking - color-selection UI中的颜色可以显示在此空间中，
+					   而在不同的工作空间中选择颜色（例如scene_linear或texture_paint）
+					2：color_timing - 用于color corrections的colorspace，例如图像查看器中的用户指定的grade
+					   （如果应用程序使用DisplayTransform :: setDisplayCC API方法）
+					3：compositing_log - 用于某些 log colorspace 的操作处理(plate resizing, pulling keys, degrain, etc). 
+					   使用 Nuke 的 OCIOLogConvert节点
+					4：data - 用于写入数据输出（如normals, depth data, “non color“数据）
+					   此roles中的colorspace通常应指定data：true，因此不应用颜色变换。
+					5：default - 当strictparsing：false时，此颜色空间用作备用。 如果未定义，则使用scene_linear role
+					6：matte_paint - 创建matte_paint的颜色空间
+					   （有关更多信息，请参阅guide on baking ICC profiles for Photoshop, and spi-vfx章节）
+					7：reference - 用于参考图像的颜色空间（例如来自互联网的sRGB图像）
+					8：scene_linear - The scene-referred linear-to-light colorspace，通常用作参考空间（见术语）
+					9：texture_paint - 类似于matte_paint，但是用于绘制3D对象的纹理
+					   （参见the description of texture painting in SPI’s pipeline章节）
+
+		--------
+		displays
+		--------
+			Required（必须的）
+				本节定义使用的所有显示设备（display devices ）。
+				例如，您可能有艺术家工作站的sRGB显示设备，放映室投影机的DCIP3显示设备。
+					每个显示设备具有多个“views”
+					这些 views 提供了所在显示设备上显示图像的不同方式。 
+					常见观点的例子有：
+						1：“Film”模拟当前显示屏上的最终投影结果
+						2：“Log” 将对数空间像素值直接发送到显示器，导致“lifted（提升）”图像对于检查黑电平有用。
+						3：“Raw”当分配具有 raw：yes 设置的颜色空间时将显示未更改的图像，对于技术检查图像很有用
+
+					config-spi-vfx配置中显示部分的示例：
+					===================================
+					displays:
+					  DCIP3:
+					    - !<View> {name: Film, colorspace: p3dci8}
+					    - !<View> {name: Log, colorspace: lg10}
+					    - !<View> {name: Raw, colorspace: nc10}
+					  sRGB:
+					    - !<View> {name: Film, colorspace: srgb8}
+					    - !<View> {name: Log, colorspace: lg10}
+					    - !<View> {name: Raw, colorspace: nc10}
+					    - !<View> {name: Film, colorspace: srgb8}
+					所有的颜色空间（p3dci8，srgb8等）指的是配置中稍后定义的颜色空间。
+					除非定义了active_displays和active_views部分，否则第一个显示和第一个视图将是默认值。
+
+		---------------
+		active_displays
+		---------------
+			Optional（可选的）
+				默认值是所有显示都是可见的，并且要遵守 displays 部分中items的顺序。
+				您可以选择要在UI中显示的显示设备，并更改显示设备的显示顺序。
+
+				给定上一节中的示例 displays block - 使sRGB设备首先出现：
+				==============================
+				active_displays: [sRGB, DCIP3]
+
+				要仅显示DCIP3设备，只需删除sRGB：
+				========================
+				active_displays: [DCIP3]
+
+				该值可以被OCIO_ACTIVE_DISPLAYS env-var覆盖。 这使您能够使sRGB成为唯一的active display，如下所示：
+				=======================
+				active_displays: [sRGB]
+
+				然后在带有DCI P3投影机的review machine上，设置以下环境变量，使DCIP3成为唯一可见的显示设备：
+				===================================
+				export OCIO_ACTIVE_DISPLAYS="DCIP3"
+
+				或指定多个active display，每个使用冒号分隔：
+				========================================
+				export OCIO_ACTIVE_DISPLAYS="DCIP3:sRGB"
+
+		------------
+		active_views
+		------------
+			Optional（可选的）
+				默认值是所有视图都是可见的，并且要遵守display下的 views 顺序。
+				与active_displays的工作原理相同，但控制哪些 views 是可见的。
+
+				由OCIO_ACTIVE_VIEWS覆盖env-var：
+				==========================
+				export OCIO_ACTIVE_DISPLAYS="Film:Log:Raw"
+
+		-----
+		looks
+		-----
+			Optional（可选的）
+				这部分定义了一个“look”的列表。
+				look 定义了与colorspace类似的颜色变换
+				但具有几个重要的区别。
+				例如：look可以定义“first pass DI beauty grade”，可以用于粗略的查看最终的grade效果
+
+				当在配置中定义look时，必须指定执行grade的名称，颜色变换和颜色空间（“process space”）。
+				当look transform 不可逆时（例如应用了一个3D LUT），可以选择为look transform指定一个反变换
+
+				当应用程序应用look时，OCIO确保“grade”应用于正确的颜色空间
+				（通过从输入颜色空间转换为过程空间，应用look转换，并将图像转换为输出颜色空间）
+
+				这里有一个简单的look:section，它定义了两个look：
+				==============================================
+				looks:
+				  - !<Look>
+				    name: beauty
+				    process_space: lnf
+				    transform: !<CDLTransform> {slope: [1, 2, 1]}
+
+				  - !<Look>
+				    name: neutral
+				    process_space: lg10
+				    transform: !<FileTransform> {src: 'neutral-${SHOT}-${SEQ}.csp', interpolation: linear }
+				    inverse_transform: !<FileTransform> {src: 'neutral-${SHOT}-${SEQ}-reverse.csp', interpolation: linear }
+				在这里 “beauty” look 外观应用一个简单，静态ASC CDL grade,使图像非常绿色（for some artistic reason!）
+				beauty look应用在scene-linear lnf colorspace中
+				(这个colorspace被定义在配置文件的其他位置)
+
+				接下来是 “neutral” look的定义，其应用镜头特定的（shot-specific） CSP LUT，
+				基于SEQ和SHOT context variables（上下文变量）动态地找到正确的LUT。
+
+				例如，如果SEQ = ab和SHOT = 1234，这个查找将在search_path中指定的位置搜索一个名为neutral-ab-1234.csp的LUT。
+				他的process_space在这里是lg10。 这意味着当应用look时，OCIO将执行以下步骤：
+					1：将图像从current colorspace 变换到lg10 process space
+					2：应用FileTransform（应用 grade LUT）
+					3：将graded image从process space 转换到 output colorspace
+
+				 “beauty”  look 指定可选的inverse_transform，因为在该示例中，neutral CSP文件包含3D LUT
+				 对于许多变换，OCIO将自动计算逆变换（与“beauty”一样），但是使用3D LUT需要定义逆变换。
+
+				 如果look 被反向应用，而inverse_transform没有被指定
+				 那么OCIO将给出一个有用的错误消息。这通常是为不可逆的looks（ This is commonly done for non-invertable looks）
+
+				 在颜色空间定义中，可以使用GroupTransform将变换指定为一系列变换
+				 例如：
+				 ==========================================================
+				 looks:
+				  - !<Look>
+				    name: beauty
+				    process_space: lnf
+				    transform: !<GroupTransform>
+				      children:
+				        - !<CDLTransform> {slope: [1, 2, 1]}
+				        - !<FileTransform> {src: beauty.spi1d, interpolation: nearest}
+
+		-----------
+		colorspaces
+		-----------
+			Required（必须的）
+				这部分将列出OCIO所有已知的色彩空间
+				colorspace可以在配置中的其他地方引用（包括其他颜色空间定义））
+				并在OCIO支持的应用程序中使用。
+
+			-------------------------------
+			to_reference and from_reference
+			-------------------------------
+				这里是一个非常简单的colorspaces部分的示例，从示例config修改config-spi-vfx：
+				=======================================
+				colorspaces:
+				  - !<ColorSpace>
+				    name: lnf
+				    bitdepth: 32f
+				    description: |
+				      lnf : linear show space
+
+				  - !<ColorSpace>
+				    name: lg16
+				    bitdepth: 16ui
+				    description: |
+				      lg16 : conversion from film log
+				    to_reference: !<FileTransform> {src: lg16_to_lnf.spi1d, interpolation: nearest}
+
+				首先，lnf色彩空间（linear float缩写）用作我们的reference colorspace，可以是任何名称。
+				但是reference colorspace的idea是OCIO中的一个重要约定：
+					所有其他颜色空间被定义为其他或来自该颜色空间的变换。
+
+				lg16颜色空间是一个16bit log的颜色空间
+				（有关此颜色空间的说明，请参阅spi-vfx）。 它有一个名称，位深度和描述。
+				lg16颜色空间被定义为从lg16到参考颜色空间（lnf）的变换。
+				该变换是应用LUT lg16_to_lnf.spi1d。该LUT具有lg16 integers 的输入，并输出线性32位浮点值
+
+				由于1D LUT是由OCIO自动可逆的，我们可以使用这个颜色空间来将lg16图像转换为lnf，lnf图像转换为lg16
+				重要的是，由于reference colorspace概念，我们可以将图像从lg16转换为reference colorspace，
+				然后再转换到任何其他色空间。
+
+				这是另一个示例颜色空间，它使用from_reference定义。
+				=================================================
+				- !<ColorSpace>
+				  name: srgb8
+				  bitdepth: 8ui
+				  description: |
+				    srgb8 :rgb display space for the srgb standard.
+				  from_reference: !<FileTransform> {src: srgb8.spi3d, interpolation: linear}
+
+				我们在这里使用 from_reference，因为我们有一个LUT从参考色空间（在本例中为lnf）转换为sRGB。
+				在这种情况下，srgb8.spi3d是一个不能被反转的复杂3D LUT，因此它被认为是一个“display only” colorspace。 
+				如果我们有第二个3D LUT来应用逆变换，我们可以指定to_reference和from_reference
+				===================================================
+				- !<ColorSpace>
+				  name: srgb8
+				  bitdepth: 8ui
+				  description: |
+				    srgb8 :rgb display space for the srgb standard.
+				  from_reference: !<FileTransform> {src: lnf_to_srgb8.spi3d, interpolation: linear}
+				  to_reference: !<FileTransform> {src: srgb8_to_lnf.spi3d, interpolation: linear}
+
+
+		-------------------------
+		Using multiple transforms
+		-------------------------
+			前面的示例颜色空间都使用单个变换，但是使用多个变换来定义颜色空间通常很有用。
+			==================================================
+			- !<ColorSpace>
+			  name: srgb8
+			  bitdepth: 8ui
+			  description: |
+			    srgb8 :rgb display space for the srgb standard.
+			  from_reference: !<GroupTransform>
+			    children:
+			      - !<ColorSpaceTransform> {src: lnf, dst: lg16}
+			      - !<FileTransform> {src: lg16_to_srgb8.spi3d, interpolation: linear}
+
+			这里从参考色空间中获取，我们首先使用ColorSpaceTransform从lnf转换为lg16，
+			然后将我们的3D LUT应用于log-encoded images
+
+			这里主要演示 meta-transform GroupTransform:简单地将两个或多个变换组合成一个的变换。
+			任何接受像FileTransform或CDLTransform这样的变换都会接受GroupTransform
+
+			还值得注意的是ColorSpaceTransform，它在lnf和lg16颜色空间之间进行转换（在当前配置中定义）。
+
+			-----------------------
+			Example transform steps
+			-----------------------
+				本节介绍OCIO如何在内部应用所有的转换。如果您了解reference colorspace的工作方式，可以跳过。
+				=========================================
+				colorspaces:
+				  - !<ColorSpace>
+				    name: lnf
+				    bitdepth: 32f
+				    description: |
+				      lnf : linear show space
+
+				  - !<ColorSpace>
+				    name: lg16
+				    bitdepth: 16ui
+				    description: |
+				      lg16 : conversion from film log
+				    to_reference: !<FileTransform> {src: lg16.spi1d, interpolation: nearest}
+
+				  - !<ColorSpace>
+				    name: srgb8
+				    bitdepth: 8ui
+				    description: |
+				      srgb8 :rgb display space for the srgb standard.
+				    from_reference: !<GroupTransform>
+				      children:
+				        - !<ColorSpaceTransform> {src: lnf, dst: lg16}
+				        - !<FileTransform> {src: lg16_to_srgb8.spi3d, interpolation: linear}
+
+				要解释这一切如何结合在一起以显示图像，假设我们在lnf色彩空间中有一个图像（例如线性EXR），
+				并希望将其转换为srgb8 - 转换步骤是：
+					1：应用ColorSpaceTransform，从lnf转换为lg16
+					2：应用FileTransform，从lg16转换为srgb8。
+
+				一个更复杂的例子：我们在lg16颜色空间中有一个图像，并转换为srgb8（使用之前的lg16定义或spi-vfx配置）：
+				首先OCIO使用lg16的to_reference中定义的变换将lg16转换为参考空间：
+					1：FileTransform applies the lg16.spi1d
+				现在图像在参考空间中，应用srgb8的变换：
+					1：ColorSpaceTransform从lnf转换为lg16
+					2：FileTransform应用lg16_to_srgb8.spi3d LUT
+
+				注意：
+					OCIO有一个转换优化器，它删除冗余步骤，并将类似的转换合并为一个操作。
+					在前面的示例中，完整的变换链将是“lg16→lnf，lnf→lg16，lg16→srgb8”。 
+					但是优化器会将其减少为“lg16 - > srgb”。
+
+		---------
+		bitdepth：
+		---------
+			Optional（可选的）
+				默认 32f
+				为颜色空间指定适当的位深度，应用程序可以使用它来以正确的位深度自动输出图像。
+				有效选项为：
+					1：8ui
+					2：10ui
+					3：12ui
+					4：14ui
+					5：16ui
+					6：32ui
+					7：16f
+					8：32f
+				数字以位为单位。 ui表示无符号整数。f表示浮点。
+				Example:
+				==========================
+				- !<ColorSpace>
+				  name: srgb8
+				  bitdepth: 8ui
+
+				  from_reference: [...]
+
+		-------
+		isdata：
+		-------
+			Optional（可选的）
+				默认 false. Boolean.
+				颜色空间上的isdata key 通知OCIO该颜色空间用于 non-color data channels,例如多通道3D渲染的“法线”输出。
+
+				这里是spi-vfx配置中的“non-color”颜色空间的示例：
+				====================================
+				- !<ColorSpace>
+				  name: ncf
+				  family: nc
+				  equalitygroup:
+				  bitdepth: 32f
+				  description: |
+				    ncf :nc,Non-color used to store non-color data such as depth or surface normals
+				  isdata: true
+				  allocation: uniform
+
+		--------------
+		equalitygroup:
+		--------------
+			Optional（可选的）
+				如果两个颜色空间在 “equality group”中，则它们之间的变换被认为是非操作（non-operations）。
+				您可能有多个相同的颜色空间，但在不同的位深度操作。
+				例如：请参阅spi-vfx配置中的lg10和lg16颜色空间。 如果加载lg10图像并转换为lg16，则不需要变换。 
+					这当然更快，但可能导致精度的意外增加（例如，它跳过由LUT导致的潜在clamp）
+				=========================================================================
+				- !<ColorSpace>
+				  name: lg16
+				  equalitygroup: lg
+				  bitdepth: 16ui
+				  to_reference: !<FileTransform> {src: lg16.spi1d, interpolation: nearest}
+
+				- !<ColorSpace>
+				  name: lg10
+				  equalitygroup: lg
+				  bitdepth: 10ui
+				  to_reference: !<FileTransform> {src: lg10.spi1d, interpolation: nearest}
+
+				不要将不同的颜色空间放在同一个等式组（equality group）中。 
+				对于“类似（similar）”颜色空间的逻辑分组（logical grouping），使用family选项。
+
+		-------
+		family:
+		-------
+			Optional（可选的）
+				允许在UI中对颜色空间进行逻辑分组（logical grouping）。
+				例如，一系列“log”颜色空间可以放在一个“family”中。 
+				在一个UI中，像Nuke OCIOColorSpace节点，这些将被分组在一起。
+			=========================
+			- !<ColorSpace>
+			  name: kodaklog
+			  family: log
+			  equalitygroup: kodaklog
+			  [...]
+
+			- !<ColorSpace>
+			  name: si2klog
+			  family: log
+			  equalitygroup: si2klog
+			  [...]
+
+			- !<ColorSpace>
+			  name: rec709
+			  family: display
+			  equalitygroup: rec709
+			  [...]
+
+			与等同组（equalitygroup）不同，family对图像处理没有影响。
+
+		-----------------------------
+		allocation and allocationvars
+		-----------------------------
+			Optional（可选的）
+				当在GPU上应用OCIO变换时，使用这两个选项。
+				它还用于在烘焙LUT时自动生成“shaper LUT”，
+				除非明确指定（不是所有输出格式都使用这个）
+
+				有关详细说明，请参阅How to Configure ColorSpace Allocation
+				“0-1”颜色空间的示例
+				==========================
+				allocation: uniform
+				allocationvars: [0.0, 1.0]
+				==========================
+				allocation: lg2
+				allocationvars: [-15, 6]
+
+
+		-----------
+		description
+		-----------
+			Optional（可选的）
+				A human-readable description of the colorspace
+				YAML语法允许单行描述：
+				==============================
+				- !<ColorSpace>
+				  name: kodaklog
+				  [...]
+				  description: A concise description of the kodaklog colorspace.
+
+				Or multiple-lines:
+				==============================
+				- !<ColorSpace>
+				  name: kodaklog
+				  [...]
+				  description:
+				    This is a multi-line description of the kodaklog colorspace,
+				    to demonstrate the YAML syntax for doing so.
+
+				    Here is the second line. The first one will be unwrapped into
+				    a single line, as will this one.
+
+				通常使用literal | block syntax保留所有换行符：
+				=============================
+				- !<ColorSpace>
+				  name: kodaklog
+				  [...]
+				  description: |
+				    This is one line.
+				    This is the second.
+
+
+
+	#----------------------#
+	# Available transforms #
+	#----------------------#
+
+

@@ -1,0 +1,289 @@
+
+#=====================================================================================================================#
+# Contexts
+#=====================================================================================================================#
+OCIO’s allows(允许) 根据current context（当前上下文）应用不同的 LUT’s 或 grades
+这些context通常基于环境变量，但也允许在操作多个镜头的应用程序（如回放工具）中进行即时context切换。
+通常，这些将被用作display transform的一部分，to apply shot-specific looks 
+(such as a CDL color correction, or a 1D grade LUT)
+
+	#---------------------#
+	# A contrived example #
+	#---------------------#
+		解释此功能的最简单的方法是使用示例。 假设我们有两个镜头，ab-123和sf-432，每个镜头需要不同的LUT来查看。 
+		当前镜头名称存储在环境变量SHOT中。
+
+		在OCIO config中，您可以使用此SHOT环境变量来构造LUT的路径/文件名。
+		此路径可以是绝对路径（例如/example/path/${SHOT}.spi1d）
+			或相对于OCIO搜索路径上的任何目录，其中包括资源路径（例如$ {SHOT} .spi1d）
+
+		这是一个简化的示例，以演示context功能。 
+		通常，这种“context LUT”将与其他LUT（例如在scene-linear to log transform之后，是3D film仿真LUT）结合使用，
+		this will be covered（覆盖/隐） in Per-shot grades
+
+		所以，我们在〜/ showcfg中有我们的空OCIO配置，以及〜/ showcfg / luts中的两个LUT，命名为af-123.spi1d和sf-432.spi1d：
+		========== 目录结构如下所示 ==========
+		~/showcfg/
+	    config.ocio
+	    luts/
+	        af-123.spi1d
+	        sf-432.spi1d
+
+	    在配置中，我们首先指定配置版本和资源路径（通常这是相对于包含config.ocio的目录，虽然可以是绝对路径）：
+	    ========== 指定配置版本和资源路径 ==========
+	    ocio_profile_version: 1
+		resource_path: luts
+
+		接下来，我们定义一个颜色空间，从show reference space转换到display colorspace：
+		========== 从show reference space转换到display colorspace ==========
+		colorspaces:
+		  - !<ColorSpace>
+		    name: srgb8
+		    family: srgb
+		    bitdepth: 8ui
+		    from_reference: !<FileTransform> {src: ${SHOT}.spi1d}
+
+		然后为这个transformm 添加显示别名：
+		========== 添加显示别名 ==========
+		displays:
+		  - !<Display> {device: sRGB, name: "Shot LUT", colorspace: srgb8}
+
+		最后，我们将OCIO env-variable 指向config，将SHOT env-variable 设置为正在处理的镜头，
+		然后启动Nuke（或任何其他启用OCIO的应用程序）：
+		export OCIO=~/showcfg/config.ocio
+		export SHOT=af-123
+		nuke
+
+		在Nuke中，我们创建一个OCIODisplay节点，使用“Shot LUT”transform 选择我们的“sRGB”设备，这将应用af-123.spi1d LUT。
+
+	#-----------------#
+	# Per-shot grades #
+	#-----------------#
+		与LUT类似，我们使用.cc文件（包含单个ASC CDL <ColorCorrection>的XML文件）
+		或.ccc文件（包含多个ASC CDL颜色更正的XML文件，每个都有唯一的ID）
+
+		使用FileTransform将.cc文件应用于常规LUT文件。 例如，如果我们在luts /目录中有af-123.cc：
+		========== .cc文件应用于常规LUT文件 ========
+		<ColorCorrection id="mygrade">
+		        <SOPNode>
+		             <Slope>2 1 1</Slope>
+		             <Offset>0 0 0</Offset>
+		             <Power>1 1 1</Power>
+		        </SOPNode>
+		        <SATNode>
+		             <Saturation>1</Saturation>
+		        </SATNode>
+		  </ColorCorrection>
+
+		我们希望将grade应用于scene-linear image，然后转换成log，并应用3D print emulation LUT.
+		由于这需要多个 transforms，而不是使用单个FileTransform，我们使用GroupTransform（这只是其他transforms的集合）：
+		========== 使用GroupTransform ==========
+		colorspaces:
+		  - !<ColorSpace>
+		    name: lnh
+		    family: ln
+		    bitdepth: 16f:
+		    isdata: false
+
+		  - !<ColorSpace>
+		    name: lg10
+		    family: lg
+		    bitdepth: 10ui
+		    isdata: false
+		    to_reference: !<FileTransform> {src: lg10.spi1d, interpolation: nearest}
+
+		  - !<ColorSpace>
+		    name: srgb8
+		    family: srgb
+		    bitdepth: 8ui
+		    isdata: false
+		    from_reference: !<GroupTransform>
+		      children:
+		        - !<FileTransform> {src: ${SHOT}.cc}
+		        - !<ColorSpaceTransform> {src: lnh, dst: lg10}
+		        - !<FileTransform> {src: film_emulation.spi3d, interpolation: linear}
+
+		.ccc文件是<ColorCorrection>的集合。 唯一的区别是当定义FileTransform时，必须指定cccdid key，
+		您也可以使用 contexts 的环境变量构造它。
+		这意味着我们可以创建一个grades.ccc文件，其中包含我们所有镜头的grade：
+		========== 创建 grades.ccc ==========
+		<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.2">
+		      <ColorCorrection id="af-123">
+		              <SOPNode>
+		                   <Slope>2 1 1</Slope>
+		                   <Offset>0 0 0</Offset>
+		                   <Power>1 1 1</Power>
+		              </SOPNode>
+		              <SATNode>
+		                   <Saturation>1</Saturation>
+		              </SATNode>
+		        </ColorCorrection>
+		        <ColorCorrection id="mygrade">
+		                <SOPNode>
+		                     <Slope>0.9 0.7 0.9</Slope>
+		                     <Offset>0 0 0</Offset>
+		                     <Power>1 1 1</Power>
+		                </SOPNode>
+		                <SATNode>
+		                     <Saturation>1</Saturation>
+		                </SATNode>
+		          </ColorCorrection>
+		</ColorCorrectionCollection>
+
+		颜色空间定义利用这个：
+		- !<ColorSpace>
+		  name: srgb8
+		  family: srgb
+		  bitdepth: 8ui
+		  isdata: false
+		  from_reference: !<GroupTransform>
+		    children:
+		      - !<FileTransform> {src: grades.ccc, cccid: ${SHOT}}
+		      - !<ColorSpaceTransform> {src: lnh, dst: lg10}
+		      - !<FileTransform> {src: film_emulation.spi3d, interpolation: linear}
+
+	#--------------------#
+	# A complete example #
+	#--------------------#
+	警告：这是不完整的，lnh_graded的空间可能是错误的
+
+		context 特征可以用于相对复杂的 grading pipelines。
+		在这个例子中，我们对每个镜头都有一个“neutral（中性） grade”，
+		以中和色调和曝光变化，保持镜头在整个序列中始终一致。
+
+		为了观看镜头，我们reverse this neutral grade，应用“beauty grade”，
+		然后应用display transform（通常的lin-to-log和a film emulation LUT）
+
+		我们将使用前面相同的两个示例镜头，af-123（在af序列中）和sg-432（在sg序列中）。 
+		想象一下，我们在每个序列中有许多图像，因此我们希望将每个序列的grade放在单独的文件中。
+
+		使用与上面相同的目录结构，在 ~/showcfg/luts中，我们首先创建两个grade文件grades_af.ccc和grades_sg.ccc
+		========== grades_af.ccc ==========
+		<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.2">
+		      <ColorCorrection id="af/af-123/neutral">
+		              <SOPNode>
+		                   <Slope>2 1 1</Slope>
+		                   <Offset>0 0 0</Offset>
+		                   <Power>1 1 1</Power>
+		              </SOPNode>
+		              <SATNode>
+		                   <Saturation>1</Saturation>
+		              </SATNode>
+		        </ColorCorrection>
+
+		      <ColorCorrection id="af/af-123/beauty">
+		              <SOPNode>
+		                   <Slope>1.5 1.2 0.9</Slope>
+		                   <Offset>0 0 0</Offset>
+		                   <Power>1 1 1</Power>
+		              </SOPNode>
+		              <SATNode>
+		                   <Saturation>0.8</Saturation>
+		              </SATNode>
+		        </ColorCorrection>
+
+		        <!-- More ColorCorrection's... -->
+		</ColorCorrectionCollection>
+
+		========== grades_sg.ccc ==========
+		<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.2">
+		        <ColorCorrection id="sg/sg-432/neutral">
+		                <SOPNode>
+		                     <Slope>0.9 0.7 0.9</Slope>
+		                     <Offset>0 0 0</Offset>
+		                     <Power>1 1 1</Power>
+		                </SOPNode>
+		                <SATNode>
+		                     <Saturation>1</Saturation>
+		                </SATNode>
+		          </ColorCorrection>
+
+		        <ColorCorrection id="sg/sg-432/beauty">
+		                <SOPNode>
+		                     <Slope>1.1 0.9 0.8</Slope>
+		                     <Offset>0 0 0</Offset>
+		                     <Power>1.2 0.9 1.5</Power>
+		                </SOPNode>
+		                <SATNode>
+		                     <Saturation>1</Saturation>
+		                </SATNode>
+		          </ColorCorrection>
+
+		          <!-- More ColorCorrection's.. -->
+		</ColorCorrectionCollection>
+
+		接下来，我们创建config.ocio文件，包含一个colorspaces来定义几个ColorSpace：
+			1：lnh, the scene-linear, 16-bit half-float space  in which compositing will happen（其中将发生合成）
+			2：lg10, 将接收10-bit log space的素材（例如.dpx格式）
+			3：srgb8，display colorspace，用于在sRGB显示器上查看neutrally graded的素材
+			4：srgb8graded，另一个display colorspace，用于查看最终的“beauty grade”
+
+		========== config.ocio ==========
+		ocio_profile_version: 1
+
+		# The directory relative to the location of this config
+		resource_path: "luts"
+
+		roles:
+		  scene_linear: lnh
+		  compositing_log: lgf
+
+		displays:
+		  # Reference to display transform, without reversing the working grade
+		  - !<Display> {device: sRGB, name: Film1D, colorspace: srgb8}
+
+		  # Reference to display, reversing the working grade, and applying
+		  # the beauty grade
+		  - !<Display> {device: sRGB, name: Film1DGraded, colorspace: srgb8graded}
+
+		colorspaces:
+
+		  # The source space, containing a log to scene-linear LUT
+		  - !<ColorSpace>
+		    name: lg10
+		    family: lg
+		    bitdepth: 10ui
+		    isdata: false
+		    to_reference: !<FileTransform> {src: lg10.spi1d, interpolation: nearest}
+
+		  # Our scene-linear space (reference space)
+		  - !<ColorSpace>
+		    name: lnh
+		    family: ln
+		    bitdepth: 16f
+		    isdata: false
+
+		  # Neutrally graded scene-linear
+		  - !<ColorSpace>
+		    name: lnh_graded
+		    family: ln
+		    bitdepth: 16f
+		    isdata: false
+		    to_reference: !<FileTransform> {src: "grades_${SEQ}.ccc", cccid: "${SEQ}/${SHOT}/neutral"}
+
+
+		  # The display colorspace - how to get from scene-linear to sRGB
+		  - !<ColorSpace>
+		    name: srgb8
+		    family: srgb
+		    bitdepth: 8ui
+		    isdata: false
+		    from_reference: !<GroupTransform>
+		      children:
+		        - !<ColorSpaceTransform> {src: lnh, dst: lg10}
+		        - !<FileTransform> {src: lg_to_srgb.spi3d, interpolation: linear}
+
+		  # Display color, with neutral grade reversed, and beauty grade applied
+		  - !<ColorSpace>
+		    name: srgb8graded
+		    family: srgb
+		    bitdepth: 8ui
+		    isdata: false
+		    from_reference: !<GroupTransform>
+		      children:
+		        - !<FileTransform> {src: "grades_${SEQ}.ccc", cccid: "${SEQ}/${SHOT}/neutral", direction: inverse}
+		        - !<FileTransform> {src: "grades_${SEQ}.ccc", cccid: "${SEQ}/${SHOT}/beauty", direction: forward}
+		        - !<ColorSpaceTransform> {src: lnh, dst: srgb8}
+
+
+

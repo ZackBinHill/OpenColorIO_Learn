@@ -1,0 +1,645 @@
+将专注于特定的任务（例如，编写基本配置或设置每个镜头的LUT）
+
+
+#=====================================================================================================================#
+# Tool overview
+#=====================================================================================================================#
+OCIO有许多部分组成，最底层的是C++ API，他可用于编写应用程序与插件
+注意：所有的这些插件使用相同的配置文件定义color space和roles，有关配置信息查看Configurations章节
+
+	#---------#
+	# The API #
+	#---------#
+		大多数用户永远不会直接与C ++ API进行交互。然而，API被所有提供的应用程序（例如ocio2icc）和插件（例如Nuke插件）使用
+		要开始使用API，请参阅开发人员指南 Developer guide章节
+
+	#-----------#
+	# ociocheck #
+	#-----------#
+		这是一个命令行工具，显示OCIO配置文件的概述，并检查是否存在明显错误
+
+	#-------------#
+	# ociobakelut #
+	#-------------#
+		将color transform烘焙成各种color lookup文件格式（“LUT”）的命令行工具
+		这适用于没有直接集成OCIO，但可以加载LUT文件的应用程序
+
+		如果我们要为Houdini的MPlay创建一个lnf到srgb8查看器LUT：
+			$ ociobakelut --inputspace scene_linear --shaperspace lg10 --outputspace srgb8 --format houdini houdini__lnf_to_lg10_to_srgb8.lut
+			-inputspace 选项指定输入图像颜色空间
+			-outputspace 选项指定显示的图像的颜色空间
+			--shaperpace选项是由于3D LUT只能实际上在0-1上操作（例如，Log图像）
+			这使用Houdini LUT的1D“预变换”LUT来执行“lnf”到“lg10”，然后3D LUT部分从“lg10”到“srgb8”（基本上创建一个单一的文件
+				包含 1D linear-to-log LUT, and a 3D log-to-sRGB LUT）
+
+			要使得log to sRGB在Flame的用法也是类似的，除了shaperspace选项被省略，因为输入色彩空间没有超出0.0-1.0的值（作为Log space）：
+			$ ociobakelut --inputspace lg10 --outputspace srgb8 --format flame flame__lg10_to_srgb.3dl
+
+	#----------#
+	# ocio2icc #
+	#----------#
+		用于从颜色空间变换生成ICC“proofing”配置文件的命令行工具，可用于Photoshop等应用程序。
+		一个常见的工作流程是matte-painters 在Photoshop中的sRGB文件上工作,
+			ICC配置文件用于查看与其他部门使用的相同的电影仿真变换的工作.
+
+	#-------------#
+	# ocioconvert #
+	#-------------#
+		加载图像，应用颜色变换，将其保存到新文件。
+		OpenImageIO用于打开和保存文件，因此支持多种格式
+
+	#-------------#
+	# ociodisplay #
+	#-------------#
+		基本图像查看器。 使用OpenImageIO加载图像，并使用OCIO和典型的查看器控件
+		（scene-linear exposure control and a post-display gamma control）显示它们，
+		可能对用户快速检查色彩空间配置有用，但主要是OCIO API的演示
+
+	#--------------#
+	# Nuke plugins #
+	#--------------#
+		Nuke中的OCIO节点包括：
+			1：OCIOColorSpace，在两个颜色空间之间进行转换（类似“ColorSpace”节点，但颜色空间在OCIO配置文件中进行了描述）
+			2：OCIODisplay用作查看器进程
+			3：OCIOFileTransform从文件（例如1D或3D LUT）加载变换，并应用它
+			4：OCIOCDLTransform应用CDL-compliant grades，并包括用于创建/加载ASC CDL文件的实用程序
+
+
+
+#=====================================================================================================================#
+# Baking LUT’s
+#=====================================================================================================================#
+有时，有必要将颜色变换写为查找表文件
+这通常是因为应用程序本身不支持OCIO（不像各种OCIO节点的Nuke），但可以加载某种LUT。 
+这将包括像Autodesk Flame，Adobe Photoshop，SideFX的MPlay（Houdini的“图像查看器”）
+
+烘焙LUT不是一个完美的解决方案，请务必测试好lut的准确性（可以使用kodak的Marcie!来测试色彩空间之间的转换）
+仔细比较参考是确保LUT正确的唯一方法。
+
+	#---------------------#
+	# Config-based baking #
+	#---------------------#
+	本节假设您有一个工作的OCIO配置
+	可以通过设置OCIO环境变量来指定配置：
+		bash$ export OCIO=~/path/to/spi-vfx/config.ocio
+	或者，配置可以指定为ociobakelut命令的命令行参数：
+		--iconfig ~/path/to/spi-vfx/config.ocio
+	这些示例将使用spi-vfx配置，特别是以下颜色空间：
+		1：lnf - scene-referred linear light colorspace (reference colorspace)
+		2：lg10 - film log colorspace (0-1 colorspace)
+		3：srgb8 - sRGB display colorspace
+		记住这些只是为了例子 - 你当然可以使用任何配置和任何颜色空间
+
+		#-----------------------#
+		# Log-input display LUT #
+		#-----------------------#
+			假设我们在MPlay中有一个lg10图像（也许是“.cin”电影扫描），并希望在我们的主显示颜色空间srgb8
+			可用的格式列在ociobakelut --help - 对于MPlay，我们使用“houdini”格式（更多详细FAQ章节)
+			因此，要创建一个从lg10转换到srgb8的LUT：
+				bash$ ociobakelut --format houdini --inputspace lg10 --outputspace srgb8 log_to_display.lut
+			然后我们可以将这个LUT加载到MPlay并正确查看lg10图像！ （注意，MPlay默认尝试线性化“.cin”文件
+				这可以在首选项中把“转换10bit Log”禁用）
+			对于大多数其他应用程序，我们可以简单地更改--format
+
+		#---------------#
+		# Shaper spaces #
+		#---------------#
+			在我们创建LUT来查看linear-light images之前，了解shaper-spaces和preluts是很重要的。
+
+			LUT的两种主要类型是1D和3D，这样的LUT格式通常需要在0.0-1.0范围内的输入值。
+			这样的LUT将不适合于 linear-light values输入图像（其中值通常大于1）
+
+			为了解决这个问题，各种LUT格式包含在主LUT之前应用的较小的“prelut”（或“shaper LUT”），
+			这用于将输入值变换为0-1范围（通常是linear-to-log类型变换）
+
+			在颜色变换上，prelut从“input-space”变换到“shaper-space”，然后主LUT从“shaper-space”变换到“output-space”
+
+			一些格式不支持这样的shaper LUT - 这些通常用于不使用浮点图像的应用程序（例如Lustre通常使用10位整型DPX,
+				因此它本身支持“-format luster”（3DL）格式 不需要预输出）
+
+		#--------------------------------#
+		# Linear-light input display LUT #
+		#--------------------------------#
+			使用shaper-spaces来进行解释：在MPlay中有一个lnf线性光图像，并希望在srgb8颜色空间中查看它
+			为了准确地创建这个LUT，没有clipping，我们将使用LUT的prelut从lnf转换到lg10，然后3D LUT将从lg10转换为srgb8
+			听起来很复杂，但命令几乎和以前一样，只是使用--shaperspace参数（和--inputspace更改）：
+				bash$ ociobakelut --format houdini --inputspace lnf --shaperspace lg10 --outputspace srgb8 lin_to_display.lut
+	
+		#-------------------------#
+		# Allocation-based prelut #
+		#-------------------------#
+			如果您的allocation variables设置正确，您可以省略--shaperspace参数，
+			并且将根据 allocation vars 自动创建一个prelut（有关详细信息，参阅How to Configure ColorSpace Allocation）
+			allocation variables：是为了最大的保留最小的剪裁
+
+			由于我们使用的配置中的颜色空间（spi-vfx）的allocation variables设置正确，我们可以简化lnf到srgb8 bake命令：
+				bash$ ociobakelut --format houdini --inputspace lnf --outputspace srgb8 lin_to_display_allocbased.lut
+			此命令为前面示例中明确指定的--shaperspace lg10创建了一个非常不同的prelut。
+				显式的指定shaper可以得到更好的结果，然而基于allocation的 prelut通常工作得更好，并且更方便
+
+			注意：基于allocation-var的prelut依赖于baker-format，并不是所有的格式都实现它们
+
+	#--------------------#		
+	# Config-free baking #
+	#--------------------#
+	可以在不使用OCIO config的情况下执行baking。这意味着不必创建一个临时配置，例如，从一个LUT格式转换到另一个。
+
+		#----------------------------#	
+		# Converting between formats #
+		#----------------------------#	
+			假设我们有一个名为log_to_display.lut的houdini LUT。 要将其转换为Flame兼容的3dl文件，只需运行：
+			ociobakelut --format flame --lut log_to_display.lut for_flame.3dl
+
+		#--------------------#
+		# Reversing a 1D LUT #
+		#--------------------#
+			可以反向应用LUT，并将其写入新的LUT（这不适用于3D LUT，但适用于1D LUT）：
+			bash$ ociobakelut --format flame --invlut logtosrgb.3dl srgbtolog.3dl
+
+		#----------------------#
+		# Creating a grade LUT #
+		#----------------------#
+			可以创建一个LUT适用于 CDL-compliant grades
+			ociobakelut --format cinespace --slope 1.2 1.0 0.9 mygrade.csp
+
+		#-------------------#
+		# Combining options #
+		#-------------------#
+			这些选项可以一起使用，多次使用
+			例如，要执行斜率偏移（slope offset），请应用“mylut.csp”，将其保存为Lustre：
+			bash$ ociobakelut --format lustre --slope 2.0 1.5 0.4 --lut mylut.csp output.3dl
+
+
+	#--------------------------#
+	# ICC profiles (Photoshop) #
+	#--------------------------#
+	Photoshop非常专注于打印和图形设计， 与feature-film VFX色彩管理关注的不同
+	问题一：是Photoshop（CS5）的当前版本只适用于使用16位整数图像（不是像在合成软件中常见的 point/linear-light image）
+	问题二：是没有简单的方法来加载一个简单的1D或3D LUT到Photoshop（它的API也不会使这很容易！
+
+		#-----------------#
+		# A working space #
+		#-----------------#
+			首先，我们需要决定在Photoshop中使用的颜色空间，这是将在其中matte-paintings的颜色空间
+			（可能是用于texture-painting的不同颜色空间，因为它们具有不同的要求）
+			工作空间应该是“0-1色彩空间”，可逆的，并且对于哑光matte-paintings 理想地允许在“diffuse white”上绘制值
+			（换句话说，当在合成中转换为线性光时绘制大于1.0的值）
+
+			这是一个facility-dependant（设施依赖）的工作流选择。
+			对于本示例，我们将使用vd16颜色空间，如spi-vfx所述
+
+		#----------------------#
+		# Creating display LUT #
+		#----------------------#
+			Photoshop中的“校对配置文件（Proofing profiles）”非常类似于Nuke等应用程序中的display LUT的方式使用。
+			此校样配置（ proof-profile）文件可用于将3D颜色变换从工作空间应用于显示空间
+			（例如，在spi-vfx配置中从vd16转换为srgb8）
+			这些 proofing-profiles are ICC profiles，- 相当于print-specific technology and relatively（相对）complex format
+			用 ociobakelut 可以用来创建这些...但有一些重要的注意事项：
+				1：将--displayicc选项与用于显示的配置文件相匹配非常重要。
+				2：Photoshop有许多打印为主的颜色管理选项，其中一些可能会导致问题。
+
+		#-----------------------#
+		# Determine display ICC #
+		#-----------------------#
+			在OS X上，启动“系统首选项”，打开“显示”，然后单击“颜色”选项卡。 选择当前active的ICC配置文件
+			如果你只是想要简单的“可能匹配”一个Linux机器，最简单的方法是取消选中“仅显示此显示的配置文件”并选择“sRGB IEC61966-2.1”配置文件。 在这种情况下，您可以跳过本节的其余部分
+
+		#------------------------#
+		# Create the ICC profile #
+		#------------------------#
+			几乎完成了，我们可以写ICC profile（ICC配置文件）!
+			完整的命令是，使用我们的示例 colorspace vd16和srgb8：
+				bash$ ociobakelut --format icc --inputspace vd16 --outputspace srgb8 --displayicc /path/to/my/monitorprofile.icc --description "vd16 to srgb8"
+			前三个选项与任何其他LUT相同：
+				bash$ ociobakelut --format icc --inputspace vd16 --outputspace srgb8 [...]
+			然后我们指定显示ICC配置文件（display ICC profile）：
+				[...] --displayicc /path/to/my/monitorprofile.icc [...] 	
+			我们可以设置描述（显示在Photoshop中），并且作为最后一个参数，指定：
+				[...] --description "vd16 to srgb8"  [...]
+			最后是输出文件的参数：
+				[...] vd16_to_srgb.icc
+
+			如果选择了“sRGB IEC61966-2.1”显示配置文件( display profile)，则可以忽略--displayicc参数（它默认为标准sRGB配置文件）：
+				bash$ ociobakelut --format icc --inputspace vd16 --outputspace srgb8 --description "vd16 to srgb8"
+
+		#---------------------------#
+		# Loading the “display LUT” #
+		#---------------------------#
+			最后一步是将ICC配置文件加载到Photoshop中，并启用它。
+
+			在OSX上，这些可以放入：/Library/ColorSync/Profiles/
+			在WIN上，右键单击配置文件（profile），然后选择“安装配置文件（Install profile）”
+			然后在任一平台上，单击“视图>校样设置>自定义...”
+				从“要模拟的设备”下拉菜单中选择您的个人资料（名称是您随附的--description提供的名称）：
+
+				如图所示，选择“保留RGB数字”，并取消选择“模拟黑色墨水”是一个很好的起点（参见下一节“其他颜色设置”）
+
+				最后，您可以在工作空间中加载图像，然后单击“查看>验证颜色”，或者按cmd + y（或ctrl + y）
+
+				当激活时，配置文件名称显示在窗口标题中（例如“....（RGB / 16＃/ vd16至srgb8”，其中“＃/”
+				之后的部分是配置文件名称，“RGB / 16” 当前图像模式）
+
+		#----------------------#
+		# Other color settings #
+		#----------------------#
+			（注意本指南是基于Photoshop CS5，并在检查OS X版本时写入，虽然大多数这些适用于Windows 7）
+			通常可以在Photoshop中matte-painting看起来相同，就像一个VFX的应用程序（如Nuke）中。
+
+			然而，如上所述，Photoshop有很多颜色管理相关的选项，其中许多可以削弱它和其他应用程序之间的匹配。 
+			操作系统还有一些控件（如前所述，使用ColorSync显示配置文件）
+
+			（理想情况下在Photoshop和Nuke之间切换）并排比较：
+			最简洁的设置位于“视图>校验设置>自定义...”菜单中。
+
+			推荐的“保留RGB（Preserve RGB）”设置时工作。 其他时间禁用“保留RGB数字（Preserve RGB Numbers）”
+			并选择“渲染意图：相对色度”可以更接近。
+
+			最好不要为您正在处理的图像分配配置文件 - 通过单击“编辑>分配配置文件”，然后选择“不要管理此文档”。
+
+			***********最后，当然，如果你没有校准过的显示器，这些都不重要！*************
+
+
+#=====================================================================================================================#
+# Contexts
+#=====================================================================================================================#
+OCIO’s allows(允许) 根据current context（当前上下文）应用不同的 LUT’s 或 grades
+这些context通常基于环境变量，但也允许在操作多个镜头的应用程序（如回放工具）中进行即时context切换。
+通常，这些将被用作display transform的一部分，to apply shot-specific looks 
+(such as a CDL color correction, or a 1D grade LUT)
+
+	#---------------------#
+	# A contrived example #
+	#---------------------#
+		解释此功能的最简单的方法是使用示例。 假设我们有两个镜头，ab-123和sf-432，每个镜头需要不同的LUT来查看。 
+		当前镜头名称存储在环境变量SHOT中。
+
+		在OCIO config中，您可以使用此SHOT环境变量来构造LUT的路径/文件名。
+		此路径可以是绝对路径（例如/example/path/${SHOT}.spi1d）
+			或相对于OCIO搜索路径上的任何目录，其中包括资源路径（例如$ {SHOT} .spi1d）
+
+		这是一个简化的示例，以演示context功能。 
+		通常，这种“context LUT”将与其他LUT（例如在scene-linear to log transform之后，是3D film仿真LUT）结合使用，
+		this will be covered（覆盖/隐） in Per-shot grades
+
+		所以，我们在〜/ showcfg中有我们的空OCIO配置，以及〜/ showcfg / luts中的两个LUT，命名为af-123.spi1d和sf-432.spi1d：
+		========== 目录结构如下所示 ==========
+		~/showcfg/
+	    config.ocio
+	    luts/
+	        af-123.spi1d
+	        sf-432.spi1d
+
+	    在配置中，我们首先指定配置版本和资源路径（通常这是相对于包含config.ocio的目录，虽然可以是绝对路径）：
+	    ========== 指定配置版本和资源路径 ==========
+	    ocio_profile_version: 1
+		resource_path: luts
+
+		接下来，我们定义一个颜色空间，从show reference space转换到display colorspace：
+		========== 从show reference space转换到display colorspace ==========
+		colorspaces:
+		  - !<ColorSpace>
+		    name: srgb8
+		    family: srgb
+		    bitdepth: 8ui
+		    from_reference: !<FileTransform> {src: ${SHOT}.spi1d}
+
+		然后为这个transformm 添加显示别名：
+		========== 添加显示别名 ==========
+		displays:
+		  - !<Display> {device: sRGB, name: "Shot LUT", colorspace: srgb8}
+
+		最后，我们将OCIO env-variable 指向config，将SHOT env-variable 设置为正在处理的镜头，
+		然后启动Nuke（或任何其他启用OCIO的应用程序）：
+		export OCIO=~/showcfg/config.ocio
+		export SHOT=af-123
+		nuke
+
+		在Nuke中，我们创建一个OCIODisplay节点，使用“Shot LUT”transform 选择我们的“sRGB”设备，这将应用af-123.spi1d LUT。
+
+	#-----------------#
+	# Per-shot grades #
+	#-----------------#
+		与LUT类似，我们使用.cc文件（包含单个ASC CDL <ColorCorrection>的XML文件）
+		或.ccc文件（包含多个ASC CDL颜色更正的XML文件，每个都有唯一的ID）
+
+		使用FileTransform将.cc文件应用于常规LUT文件。 例如，如果我们在luts /目录中有af-123.cc：
+		========== .cc文件应用于常规LUT文件 ========
+		<ColorCorrection id="mygrade">
+		        <SOPNode>
+		             <Slope>2 1 1</Slope>
+		             <Offset>0 0 0</Offset>
+		             <Power>1 1 1</Power>
+		        </SOPNode>
+		        <SATNode>
+		             <Saturation>1</Saturation>
+		        </SATNode>
+		  </ColorCorrection>
+
+		我们希望将grade应用于scene-linear image，然后转换成log，并应用3D print emulation LUT.
+		由于这需要多个 transforms，而不是使用单个FileTransform，我们使用GroupTransform（这只是其他transforms的集合）：
+		========== 使用GroupTransform ==========
+		colorspaces:
+		  - !<ColorSpace>
+		    name: lnh
+		    family: ln
+		    bitdepth: 16f:
+		    isdata: false
+
+		  - !<ColorSpace>
+		    name: lg10
+		    family: lg
+		    bitdepth: 10ui
+		    isdata: false
+		    to_reference: !<FileTransform> {src: lg10.spi1d, interpolation: nearest}
+
+		  - !<ColorSpace>
+		    name: srgb8
+		    family: srgb
+		    bitdepth: 8ui
+		    isdata: false
+		    from_reference: !<GroupTransform>
+		      children:
+		        - !<FileTransform> {src: ${SHOT}.cc}
+		        - !<ColorSpaceTransform> {src: lnh, dst: lg10}
+		        - !<FileTransform> {src: film_emulation.spi3d, interpolation: linear}
+
+		.ccc文件是<ColorCorrection>的集合。 唯一的区别是当定义FileTransform时，必须指定cccdid key，
+		您也可以使用 contexts 的环境变量构造它。
+		这意味着我们可以创建一个grades.ccc文件，其中包含我们所有镜头的grade：
+		========== 创建 grades.ccc ==========
+		<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.2">
+		      <ColorCorrection id="af-123">
+		              <SOPNode>
+		                   <Slope>2 1 1</Slope>
+		                   <Offset>0 0 0</Offset>
+		                   <Power>1 1 1</Power>
+		              </SOPNode>
+		              <SATNode>
+		                   <Saturation>1</Saturation>
+		              </SATNode>
+		        </ColorCorrection>
+		        <ColorCorrection id="mygrade">
+		                <SOPNode>
+		                     <Slope>0.9 0.7 0.9</Slope>
+		                     <Offset>0 0 0</Offset>
+		                     <Power>1 1 1</Power>
+		                </SOPNode>
+		                <SATNode>
+		                     <Saturation>1</Saturation>
+		                </SATNode>
+		          </ColorCorrection>
+		</ColorCorrectionCollection>
+
+		颜色空间定义利用这个：
+		- !<ColorSpace>
+		  name: srgb8
+		  family: srgb
+		  bitdepth: 8ui
+		  isdata: false
+		  from_reference: !<GroupTransform>
+		    children:
+		      - !<FileTransform> {src: grades.ccc, cccid: ${SHOT}}
+		      - !<ColorSpaceTransform> {src: lnh, dst: lg10}
+		      - !<FileTransform> {src: film_emulation.spi3d, interpolation: linear}
+
+	#--------------------#
+	# A complete example #
+	#--------------------#
+	警告：这是不完整的，lnh_graded的空间可能是错误的
+
+		context 特征可以用于相对复杂的 grading pipelines。
+		在这个例子中，我们对每个镜头都有一个“neutral（中性） grade”，
+		以中和色调和曝光变化，保持镜头在整个序列中始终一致。
+
+		为了观看镜头，我们reverse this neutral grade，应用“beauty grade”，
+		然后应用display transform（通常的lin-to-log和a film emulation LUT）
+
+		我们将使用前面相同的两个示例镜头，af-123（在af序列中）和sg-432（在sg序列中）。 
+		想象一下，我们在每个序列中有许多图像，因此我们希望将每个序列的grade放在单独的文件中。
+
+		使用与上面相同的目录结构，在 ~/showcfg/luts中，我们首先创建两个grade文件grades_af.ccc和grades_sg.ccc
+		========== grades_af.ccc ==========
+		<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.2">
+		      <ColorCorrection id="af/af-123/neutral">
+		              <SOPNode>
+		                   <Slope>2 1 1</Slope>
+		                   <Offset>0 0 0</Offset>
+		                   <Power>1 1 1</Power>
+		              </SOPNode>
+		              <SATNode>
+		                   <Saturation>1</Saturation>
+		              </SATNode>
+		        </ColorCorrection>
+
+		      <ColorCorrection id="af/af-123/beauty">
+		              <SOPNode>
+		                   <Slope>1.5 1.2 0.9</Slope>
+		                   <Offset>0 0 0</Offset>
+		                   <Power>1 1 1</Power>
+		              </SOPNode>
+		              <SATNode>
+		                   <Saturation>0.8</Saturation>
+		              </SATNode>
+		        </ColorCorrection>
+
+		        <!-- More ColorCorrection's... -->
+		</ColorCorrectionCollection>
+
+		========== grades_sg.ccc ==========
+		<ColorCorrectionCollection xmlns="urn:ASC:CDL:v1.2">
+		        <ColorCorrection id="sg/sg-432/neutral">
+		                <SOPNode>
+		                     <Slope>0.9 0.7 0.9</Slope>
+		                     <Offset>0 0 0</Offset>
+		                     <Power>1 1 1</Power>
+		                </SOPNode>
+		                <SATNode>
+		                     <Saturation>1</Saturation>
+		                </SATNode>
+		          </ColorCorrection>
+
+		        <ColorCorrection id="sg/sg-432/beauty">
+		                <SOPNode>
+		                     <Slope>1.1 0.9 0.8</Slope>
+		                     <Offset>0 0 0</Offset>
+		                     <Power>1.2 0.9 1.5</Power>
+		                </SOPNode>
+		                <SATNode>
+		                     <Saturation>1</Saturation>
+		                </SATNode>
+		          </ColorCorrection>
+
+		          <!-- More ColorCorrection's.. -->
+		</ColorCorrectionCollection>
+
+		接下来，我们创建config.ocio文件，包含一个colorspaces来定义几个ColorSpace：
+			1：lnh, the scene-linear, 16-bit half-float space  in which compositing will happen（其中将发生合成）
+			2：lg10, 将接收10-bit log space的素材（例如.dpx格式）
+			3：srgb8，display colorspace，用于在sRGB显示器上查看neutrally graded的素材
+			4：srgb8graded，另一个display colorspace，用于查看最终的“beauty grade”
+
+		========== config.ocio ==========
+		ocio_profile_version: 1
+
+		# The directory relative to the location of this config
+		resource_path: "luts"
+
+		roles:
+		  scene_linear: lnh
+		  compositing_log: lgf
+
+		displays:
+		  # Reference to display transform, without reversing the working grade
+		  - !<Display> {device: sRGB, name: Film1D, colorspace: srgb8}
+
+		  # Reference to display, reversing the working grade, and applying
+		  # the beauty grade
+		  - !<Display> {device: sRGB, name: Film1DGraded, colorspace: srgb8graded}
+
+		colorspaces:
+
+		  # The source space, containing a log to scene-linear LUT
+		  - !<ColorSpace>
+		    name: lg10
+		    family: lg
+		    bitdepth: 10ui
+		    isdata: false
+		    to_reference: !<FileTransform> {src: lg10.spi1d, interpolation: nearest}
+
+		  # Our scene-linear space (reference space)
+		  - !<ColorSpace>
+		    name: lnh
+		    family: ln
+		    bitdepth: 16f
+		    isdata: false
+
+		  # Neutrally graded scene-linear
+		  - !<ColorSpace>
+		    name: lnh_graded
+		    family: ln
+		    bitdepth: 16f
+		    isdata: false
+		    to_reference: !<FileTransform> {src: "grades_${SEQ}.ccc", cccid: "${SEQ}/${SHOT}/neutral"}
+
+
+		  # The display colorspace - how to get from scene-linear to sRGB
+		  - !<ColorSpace>
+		    name: srgb8
+		    family: srgb
+		    bitdepth: 8ui
+		    isdata: false
+		    from_reference: !<GroupTransform>
+		      children:
+		        - !<ColorSpaceTransform> {src: lnh, dst: lg10}
+		        - !<FileTransform> {src: lg_to_srgb.spi3d, interpolation: linear}
+
+		  # Display color, with neutral grade reversed, and beauty grade applied
+		  - !<ColorSpace>
+		    name: srgb8graded
+		    family: srgb
+		    bitdepth: 8ui
+		    isdata: false
+		    from_reference: !<GroupTransform>
+		      children:
+		        - !<FileTransform> {src: "grades_${SEQ}.ccc", cccid: "${SEQ}/${SHOT}/neutral", direction: inverse}
+		        - !<FileTransform> {src: "grades_${SEQ}.ccc", cccid: "${SEQ}/${SHOT}/beauty", direction: forward}
+		        - !<ColorSpaceTransform> {src: lnh, dst: srgb8}
+
+
+
+#=====================================================================================================================#
+# Looks
+#=====================================================================================================================#
+A “look” is a named color transform,旨在以“创意(creative)”方式修改图像的外观
+（与倾向于在技术/数学(technically/mathematically)上定义的颜色空间定义相反）
+
+looks 可以是在VFX工作之前应用于电影扫描的neutral grade，
+或者由导演决定的 per-shot DI grade，以在观看transform之前应用
+
+Looks类似于colorspaces的定义，指定name和transform（可能是包含几个其他transform的GroupTransform），
+以及可选的inverse transform。
+
+Looks与colorspaces不同之地在于如何应用，使用Looks，你也可以指定“process space” ，
+应用transform colorspace
+
+	#-----------------------#
+	# Example configuration #
+	#-----------------------#
+		Step 1: Setup a Look（配置look）
+			look 是 top-level OCIO configuration 对象。
+			在概念上，它是一个命名的transform，应用于特定的色彩空间。
+			下面对.ocio配置的所有更改都可以通过编辑文本或使用Python API手动完成。
+
+			Example look definition in a OCIO config:
+			========== 在 .ocio中配置looks ==========
+			looks:
+			- !<Look>
+			  name: di
+			  process_space: rclg16
+			  transform: !<FileTransform> {src: look_di.cc, interpolation: linear}
+
+			src文件可以是OCIO支持的任何LUT类型
+			（在这种情况下，它是一个包含来自CDL文件的<ColorCorrection>元素的文件。）
+			还可以指定.3dl等。
+
+			一旦在配置中定义一个Look，你会看到Nuke中的OCIOLookTransform节点将提供命名选项。
+			“DI”看起来概念上代表将在DI中应用的外观。 我们经常使用的其他外观名称是“onset”，“editorial”等。
+			process_space指定应该在该空间中应用transform。
+			在本示例中，如果向OCIOLookTransform节点提供线性输入，则在应用look_di.cc文件转换之前，像素将转换为rclg16。
+
+		Step 2: Update the Display to use a look.(更新显示以使用look)
+			可以在View tag中指定可选的“looks” tag
+			应用指定的looks。 这使得查看器中的应用程序提供使用looks的选项。
+			Example:
+			========== 指定looks view ==========
+			displays:
+			  DLP:
+			    - !<View> {name: Raw, colorspace: nc10}
+			    - !<View> {name: Log, colorspace: rclg10}
+			    - !<View> {name: Film, colorspace: p3dci16}
+			    - !<View> {name: Film DI, colorspace: p3dci16, looks: di}
+			  sRGB:
+			    - !<View> {name: Raw, colorspace: nc10}
+			    - !<View> {name: Log, colorspace: rclg10}
+			    - !<View> {name: Film, colorspace: srgb10}
+			    - !<View> {name: Film DI, colorspace: srgb10, looks: di}
+
+			高级用户的选项，looks tag 实际上是一个逗号分隔的列表，支持+/-修饰符。
+			所以如果你想指定一个视图撤消DI，然后添加Onset，你可以做“-di，+ onset”。
+
+		Step 3: Get per-shot looks supported.
+			在顶部的示例中，作为相对路径位置的look_di.cc将检查配置的search_path中的每个位置。 将使用找到的第一个文件。
+			所以你的配置要包含：
+				search_path: luts
+				...然后只检查相对于OCIO配置的'luts'子目录。
+
+			但是，如果你指定：
+				search_path: /shots/show/$SHOT/cc/data:luts
+				 将首先检查‘/shots/show/$SHOT/cc/data/’目录，然后才会检查‘luts’子目录
+				 env-vars，绝对和相对路径都可以在配置的search_path以及View的src规范中使用。
+
+			Example:
+			========== look配置 ==========
+			- !<Look>
+			  name: di
+			  process_space: rclg16
+			  transform: !<FileTransform> {src: looks/$SHOT_di/current/look_$SHOT_di.cc, interpolation: linear}
+
+			注意：如果没有找到 pre-shot 的 lut，你也可以控制是否回退查找备用的lut（基于主位置）
+				  也可以使用多个级别等等（show, shot, etc）
+
+			
+			高级选项：如果有些镜头使用.cc文件，一些使用3d-luts目前没有简单的方法来处理这个。
+			我们建议您使用相同的扩展名（例如.cc）标记所有文件，然后依靠OCIO的力量来错误的lut文件，
+			只是加载它们。 注意：这只能在1.0.1+（提交sha-1：6da3411ced）
+
+			高级选项：在Nuke OCIO节点中，您通常希望预览“跨镜头（across shots）”（通常用于reference等）。
+			您可以使用“上下文”菜单覆盖每个节点中的env-vars。 
+			例如，如果你知道正在使用$ SHOT，在上下文key1中你应该指定'SHOT'，
+			而value1指定要使用的镜头（例如dev.lookdev）。 
+			你也可以使用表达式，说出从[metadata“input / filename”]解析一个镜头名称
+
+			高级选项：如果您正在编写自己的OCIO集成代码，则如果未找到每个镜头的lut，getProcessor将失败，
+			您可能想要将此错误与其他OCIO错误区分开来。 因此，我们提供OCIO :: ExceptionMissingFile，
+			可以显式捕获（这可以使用OCIO :: DisplayTransform :: setLooksOverride（））。 我希望图像flipbook应用程序使用这种方法。

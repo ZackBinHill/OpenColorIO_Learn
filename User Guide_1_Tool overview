@@ -1,0 +1,66 @@
+将专注于特定的任务（例如，编写基本配置或设置每个镜头的LUT）
+
+
+#=====================================================================================================================#
+# Tool overview
+#=====================================================================================================================#
+OCIO有许多部分组成，最底层的是C++ API，他可用于编写应用程序与插件
+注意：所有的这些插件使用相同的配置文件定义color space和roles，有关配置信息查看Configurations章节
+
+	#---------#
+	# The API #
+	#---------#
+		大多数用户永远不会直接与C ++ API进行交互。然而，API被所有提供的应用程序（例如ocio2icc）和插件（例如Nuke插件）使用
+		要开始使用API，请参阅开发人员指南 Developer guide章节
+
+	#-----------#
+	# ociocheck #
+	#-----------#
+		这是一个命令行工具，显示OCIO配置文件的概述，并检查是否存在明显错误
+
+	#-------------#
+	# ociobakelut #
+	#-------------#
+		将color transform烘焙成各种color lookup文件格式（“LUT”）的命令行工具
+		这适用于没有直接集成OCIO，但可以加载LUT文件的应用程序
+
+		如果我们要为Houdini的MPlay创建一个lnf到srgb8查看器LUT：
+			$ ociobakelut --inputspace scene_linear --shaperspace lg10 --outputspace srgb8 --format houdini houdini__lnf_to_lg10_to_srgb8.lut
+			-inputspace 选项指定输入图像颜色空间
+			-outputspace 选项指定显示的图像的颜色空间
+			--shaperpace选项是由于3D LUT只能实际上在0-1上操作（例如，Log图像）
+			这使用Houdini LUT的1D“预变换”LUT来执行“lnf”到“lg10”，然后3D LUT部分从“lg10”到“srgb8”（基本上创建一个单一的文件
+				包含 1D linear-to-log LUT, and a 3D log-to-sRGB LUT）
+
+			要使得log to sRGB在Flame的用法也是类似的，除了shaperspace选项被省略，因为输入色彩空间没有超出0.0-1.0的值（作为Log space）：
+			$ ociobakelut --inputspace lg10 --outputspace srgb8 --format flame flame__lg10_to_srgb.3dl
+
+	#----------#
+	# ocio2icc #
+	#----------#
+		用于从颜色空间变换生成ICC“proofing”配置文件的命令行工具，可用于Photoshop等应用程序。
+		一个常见的工作流程是matte-painters 在Photoshop中的sRGB文件上工作,
+			ICC配置文件用于查看与其他部门使用的相同的电影仿真变换的工作.
+
+	#-------------#
+	# ocioconvert #
+	#-------------#
+		加载图像，应用颜色变换，将其保存到新文件。
+		OpenImageIO用于打开和保存文件，因此支持多种格式
+
+	#-------------#
+	# ociodisplay #
+	#-------------#
+		基本图像查看器。 使用OpenImageIO加载图像，并使用OCIO和典型的查看器控件
+		（scene-linear exposure control and a post-display gamma control）显示它们，
+		可能对用户快速检查色彩空间配置有用，但主要是OCIO API的演示
+
+	#--------------#
+	# Nuke plugins #
+	#--------------#
+		Nuke中的OCIO节点包括：
+			1：OCIOColorSpace，在两个颜色空间之间进行转换（类似“ColorSpace”节点，但颜色空间在OCIO配置文件中进行了描述）
+			2：OCIODisplay用作查看器进程
+			3：OCIOFileTransform从文件（例如1D或3D LUT）加载变换，并应用它
+			4：OCIOCDLTransform应用CDL-compliant grades，并包括用于创建/加载ASC CDL文件的实用程序
+

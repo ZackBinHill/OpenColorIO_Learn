@@ -1,0 +1,194 @@
+
+#=====================================================================================================================#
+# Baking LUT’s
+#=====================================================================================================================#
+有时，有必要将颜色变换写为查找表文件
+这通常是因为应用程序本身不支持OCIO（不像各种OCIO节点的Nuke），但可以加载某种LUT。 
+这将包括像Autodesk Flame，Adobe Photoshop，SideFX的MPlay（Houdini的“图像查看器”）
+
+烘焙LUT不是一个完美的解决方案，请务必测试好lut的准确性（可以使用kodak的Marcie!来测试色彩空间之间的转换）
+仔细比较参考是确保LUT正确的唯一方法。
+
+	#---------------------#
+	# Config-based baking #
+	#---------------------#
+	本节假设您有一个工作的OCIO配置
+	可以通过设置OCIO环境变量来指定配置：
+		bash$ export OCIO=~/path/to/spi-vfx/config.ocio
+	或者，配置可以指定为ociobakelut命令的命令行参数：
+		--iconfig ~/path/to/spi-vfx/config.ocio
+	这些示例将使用spi-vfx配置，特别是以下颜色空间：
+		1：lnf - scene-referred linear light colorspace (reference colorspace)
+		2：lg10 - film log colorspace (0-1 colorspace)
+		3：srgb8 - sRGB display colorspace
+		记住这些只是为了例子 - 你当然可以使用任何配置和任何颜色空间
+
+		#-----------------------#
+		# Log-input display LUT #
+		#-----------------------#
+			假设我们在MPlay中有一个lg10图像（也许是“.cin”电影扫描），并希望在我们的主显示颜色空间srgb8
+			可用的格式列在ociobakelut --help - 对于MPlay，我们使用“houdini”格式（更多详细FAQ章节)
+			因此，要创建一个从lg10转换到srgb8的LUT：
+				bash$ ociobakelut --format houdini --inputspace lg10 --outputspace srgb8 log_to_display.lut
+			然后我们可以将这个LUT加载到MPlay并正确查看lg10图像！ （注意，MPlay默认尝试线性化“.cin”文件
+				这可以在首选项中把“转换10bit Log”禁用）
+			对于大多数其他应用程序，我们可以简单地更改--format
+
+		#---------------#
+		# Shaper spaces #
+		#---------------#
+			在我们创建LUT来查看linear-light images之前，了解shaper-spaces和preluts是很重要的。
+
+			LUT的两种主要类型是1D和3D，这样的LUT格式通常需要在0.0-1.0范围内的输入值。
+			这样的LUT将不适合于 linear-light values输入图像（其中值通常大于1）
+
+			为了解决这个问题，各种LUT格式包含在主LUT之前应用的较小的“prelut”（或“shaper LUT”），
+			这用于将输入值变换为0-1范围（通常是linear-to-log类型变换）
+
+			在颜色变换上，prelut从“input-space”变换到“shaper-space”，然后主LUT从“shaper-space”变换到“output-space”
+
+			一些格式不支持这样的shaper LUT - 这些通常用于不使用浮点图像的应用程序（例如Lustre通常使用10位整型DPX,
+				因此它本身支持“-format luster”（3DL）格式 不需要预输出）
+
+		#--------------------------------#
+		# Linear-light input display LUT #
+		#--------------------------------#
+			使用shaper-spaces来进行解释：在MPlay中有一个lnf线性光图像，并希望在srgb8颜色空间中查看它
+			为了准确地创建这个LUT，没有clipping，我们将使用LUT的prelut从lnf转换到lg10，然后3D LUT将从lg10转换为srgb8
+			听起来很复杂，但命令几乎和以前一样，只是使用--shaperspace参数（和--inputspace更改）：
+				bash$ ociobakelut --format houdini --inputspace lnf --shaperspace lg10 --outputspace srgb8 lin_to_display.lut
+	
+		#-------------------------#
+		# Allocation-based prelut #
+		#-------------------------#
+			如果您的allocation variables设置正确，您可以省略--shaperspace参数，
+			并且将根据 allocation vars 自动创建一个prelut（有关详细信息，参阅How to Configure ColorSpace Allocation）
+			allocation variables：是为了最大的保留最小的剪裁
+
+			由于我们使用的配置中的颜色空间（spi-vfx）的allocation variables设置正确，我们可以简化lnf到srgb8 bake命令：
+				bash$ ociobakelut --format houdini --inputspace lnf --outputspace srgb8 lin_to_display_allocbased.lut
+			此命令为前面示例中明确指定的--shaperspace lg10创建了一个非常不同的prelut。
+				显式的指定shaper可以得到更好的结果，然而基于allocation的 prelut通常工作得更好，并且更方便
+
+			注意：基于allocation-var的prelut依赖于baker-format，并不是所有的格式都实现它们
+
+	#--------------------#		
+	# Config-free baking #
+	#--------------------#
+	可以在不使用OCIO config的情况下执行baking。这意味着不必创建一个临时配置，例如，从一个LUT格式转换到另一个。
+
+		#----------------------------#	
+		# Converting between formats #
+		#----------------------------#	
+			假设我们有一个名为log_to_display.lut的houdini LUT。 要将其转换为Flame兼容的3dl文件，只需运行：
+			ociobakelut --format flame --lut log_to_display.lut for_flame.3dl
+
+		#--------------------#
+		# Reversing a 1D LUT #
+		#--------------------#
+			可以反向应用LUT，并将其写入新的LUT（这不适用于3D LUT，但适用于1D LUT）：
+			bash$ ociobakelut --format flame --invlut logtosrgb.3dl srgbtolog.3dl
+
+		#----------------------#
+		# Creating a grade LUT #
+		#----------------------#
+			可以创建一个LUT适用于 CDL-compliant grades
+			ociobakelut --format cinespace --slope 1.2 1.0 0.9 mygrade.csp
+
+		#-------------------#
+		# Combining options #
+		#-------------------#
+			这些选项可以一起使用，多次使用
+			例如，要执行斜率偏移（slope offset），请应用“mylut.csp”，将其保存为Lustre：
+			bash$ ociobakelut --format lustre --slope 2.0 1.5 0.4 --lut mylut.csp output.3dl
+
+
+	#--------------------------#
+	# ICC profiles (Photoshop) #
+	#--------------------------#
+	Photoshop非常专注于打印和图形设计， 与feature-film VFX色彩管理关注的不同
+	问题一：是Photoshop（CS5）的当前版本只适用于使用16位整数图像（不是像在合成软件中常见的 point/linear-light image）
+	问题二：是没有简单的方法来加载一个简单的1D或3D LUT到Photoshop（它的API也不会使这很容易！
+
+		#-----------------#
+		# A working space #
+		#-----------------#
+			首先，我们需要决定在Photoshop中使用的颜色空间，这是将在其中matte-paintings的颜色空间
+			（可能是用于texture-painting的不同颜色空间，因为它们具有不同的要求）
+			工作空间应该是“0-1色彩空间”，可逆的，并且对于哑光matte-paintings 理想地允许在“diffuse white”上绘制值
+			（换句话说，当在合成中转换为线性光时绘制大于1.0的值）
+
+			这是一个facility-dependant（设施依赖）的工作流选择。
+			对于本示例，我们将使用vd16颜色空间，如spi-vfx所述
+
+		#----------------------#
+		# Creating display LUT #
+		#----------------------#
+			Photoshop中的“校对配置文件（Proofing profiles）”非常类似于Nuke等应用程序中的display LUT的方式使用。
+			此校样配置（ proof-profile）文件可用于将3D颜色变换从工作空间应用于显示空间
+			（例如，在spi-vfx配置中从vd16转换为srgb8）
+			这些 proofing-profiles are ICC profiles，- 相当于print-specific technology and relatively（相对）complex format
+			用 ociobakelut 可以用来创建这些...但有一些重要的注意事项：
+				1：将--displayicc选项与用于显示的配置文件相匹配非常重要。
+				2：Photoshop有许多打印为主的颜色管理选项，其中一些可能会导致问题。
+
+		#-----------------------#
+		# Determine display ICC #
+		#-----------------------#
+			在OS X上，启动“系统首选项”，打开“显示”，然后单击“颜色”选项卡。 选择当前active的ICC配置文件
+			如果你只是想要简单的“可能匹配”一个Linux机器，最简单的方法是取消选中“仅显示此显示的配置文件”并选择“sRGB IEC61966-2.1”配置文件。 在这种情况下，您可以跳过本节的其余部分
+
+		#------------------------#
+		# Create the ICC profile #
+		#------------------------#
+			几乎完成了，我们可以写ICC profile（ICC配置文件）!
+			完整的命令是，使用我们的示例 colorspace vd16和srgb8：
+				bash$ ociobakelut --format icc --inputspace vd16 --outputspace srgb8 --displayicc /path/to/my/monitorprofile.icc --description "vd16 to srgb8"
+			前三个选项与任何其他LUT相同：
+				bash$ ociobakelut --format icc --inputspace vd16 --outputspace srgb8 [...]
+			然后我们指定显示ICC配置文件（display ICC profile）：
+				[...] --displayicc /path/to/my/monitorprofile.icc [...] 	
+			我们可以设置描述（显示在Photoshop中），并且作为最后一个参数，指定：
+				[...] --description "vd16 to srgb8"  [...]
+			最后是输出文件的参数：
+				[...] vd16_to_srgb.icc
+
+			如果选择了“sRGB IEC61966-2.1”显示配置文件( display profile)，则可以忽略--displayicc参数（它默认为标准sRGB配置文件）：
+				bash$ ociobakelut --format icc --inputspace vd16 --outputspace srgb8 --description "vd16 to srgb8"
+
+		#---------------------------#
+		# Loading the “display LUT” #
+		#---------------------------#
+			最后一步是将ICC配置文件加载到Photoshop中，并启用它。
+
+			在OSX上，这些可以放入：/Library/ColorSync/Profiles/
+			在WIN上，右键单击配置文件（profile），然后选择“安装配置文件（Install profile）”
+			然后在任一平台上，单击“视图>校样设置>自定义...”
+				从“要模拟的设备”下拉菜单中选择您的个人资料（名称是您随附的--description提供的名称）：
+
+				如图所示，选择“保留RGB数字”，并取消选择“模拟黑色墨水”是一个很好的起点（参见下一节“其他颜色设置”）
+
+				最后，您可以在工作空间中加载图像，然后单击“查看>验证颜色”，或者按cmd + y（或ctrl + y）
+
+				当激活时，配置文件名称显示在窗口标题中（例如“....（RGB / 16＃/ vd16至srgb8”，其中“＃/”
+				之后的部分是配置文件名称，“RGB / 16” 当前图像模式）
+
+		#----------------------#
+		# Other color settings #
+		#----------------------#
+			（注意本指南是基于Photoshop CS5，并在检查OS X版本时写入，虽然大多数这些适用于Windows 7）
+			通常可以在Photoshop中matte-painting看起来相同，就像一个VFX的应用程序（如Nuke）中。
+
+			然而，如上所述，Photoshop有很多颜色管理相关的选项，其中许多可以削弱它和其他应用程序之间的匹配。 
+			操作系统还有一些控件（如前所述，使用ColorSync显示配置文件）
+
+			（理想情况下在Photoshop和Nuke之间切换）并排比较：
+			最简洁的设置位于“视图>校验设置>自定义...”菜单中。
+
+			推荐的“保留RGB（Preserve RGB）”设置时工作。 其他时间禁用“保留RGB数字（Preserve RGB Numbers）”
+			并选择“渲染意图：相对色度”可以更接近。
+
+			最好不要为您正在处理的图像分配配置文件 - 通过单击“编辑>分配配置文件”，然后选择“不要管理此文档”。
+
+			***********最后，当然，如果你没有校准过的显示器，这些都不重要！*************
+

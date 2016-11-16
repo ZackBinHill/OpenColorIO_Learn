@@ -1,0 +1,96 @@
+
+#=====================================================================================================================#
+# Looks
+#=====================================================================================================================#
+A “look” is a named color transform,旨在以“创意(creative)”方式修改图像的外观
+（与倾向于在技术/数学(technically/mathematically)上定义的颜色空间定义相反）
+
+looks 可以是在VFX工作之前应用于电影扫描的neutral grade，
+或者由导演决定的 per-shot DI grade，以在观看transform之前应用
+
+Looks类似于colorspaces的定义，指定name和transform（可能是包含几个其他transform的GroupTransform），
+以及可选的inverse transform。
+
+Looks与colorspaces不同之地在于如何应用，使用Looks，你也可以指定“process space” ，
+应用transform colorspace
+
+	#-----------------------#
+	# Example configuration #
+	#-----------------------#
+		Step 1: Setup a Look（配置look）
+			look 是 top-level OCIO configuration 对象。
+			在概念上，它是一个命名的transform，应用于特定的色彩空间。
+			下面对.ocio配置的所有更改都可以通过编辑文本或使用Python API手动完成。
+
+			Example look definition in a OCIO config:
+			========== 在 .ocio中配置looks ==========
+			looks:
+			- !<Look>
+			  name: di
+			  process_space: rclg16
+			  transform: !<FileTransform> {src: look_di.cc, interpolation: linear}
+
+			src文件可以是OCIO支持的任何LUT类型
+			（在这种情况下，它是一个包含来自CDL文件的<ColorCorrection>元素的文件。）
+			还可以指定.3dl等。
+
+			一旦在配置中定义一个Look，你会看到Nuke中的OCIOLookTransform节点将提供命名选项。
+			“DI”看起来概念上代表将在DI中应用的外观。 我们经常使用的其他外观名称是“onset”，“editorial”等。
+			process_space指定应该在该空间中应用transform。
+			在本示例中，如果向OCIOLookTransform节点提供线性输入，则在应用look_di.cc文件转换之前，像素将转换为rclg16。
+
+		Step 2: Update the Display to use a look.(更新显示以使用look)
+			可以在View tag中指定可选的“looks” tag
+			应用指定的looks。 这使得查看器中的应用程序提供使用looks的选项。
+			Example:
+			========== 指定looks view ==========
+			displays:
+			  DLP:
+			    - !<View> {name: Raw, colorspace: nc10}
+			    - !<View> {name: Log, colorspace: rclg10}
+			    - !<View> {name: Film, colorspace: p3dci16}
+			    - !<View> {name: Film DI, colorspace: p3dci16, looks: di}
+			  sRGB:
+			    - !<View> {name: Raw, colorspace: nc10}
+			    - !<View> {name: Log, colorspace: rclg10}
+			    - !<View> {name: Film, colorspace: srgb10}
+			    - !<View> {name: Film DI, colorspace: srgb10, looks: di}
+
+			高级用户的选项，looks tag 实际上是一个逗号分隔的列表，支持+/-修饰符。
+			所以如果你想指定一个视图撤消DI，然后添加Onset，你可以做“-di，+ onset”。
+
+		Step 3: Get per-shot looks supported.
+			在顶部的示例中，作为相对路径位置的look_di.cc将检查配置的search_path中的每个位置。 将使用找到的第一个文件。
+			所以你的配置要包含：
+				search_path: luts
+				...然后只检查相对于OCIO配置的'luts'子目录。
+
+			但是，如果你指定：
+				search_path: /shots/show/$SHOT/cc/data:luts
+				 将首先检查‘/shots/show/$SHOT/cc/data/’目录，然后才会检查‘luts’子目录
+				 env-vars，绝对和相对路径都可以在配置的search_path以及View的src规范中使用。
+
+			Example:
+			========== look配置 ==========
+			- !<Look>
+			  name: di
+			  process_space: rclg16
+			  transform: !<FileTransform> {src: looks/$SHOT_di/current/look_$SHOT_di.cc, interpolation: linear}
+
+			注意：如果没有找到 pre-shot 的 lut，你也可以控制是否回退查找备用的lut（基于主位置）
+				  也可以使用多个级别等等（show, shot, etc）
+
+			
+			高级选项：如果有些镜头使用.cc文件，一些使用3d-luts目前没有简单的方法来处理这个。
+			我们建议您使用相同的扩展名（例如.cc）标记所有文件，然后依靠OCIO的力量来错误的lut文件，
+			只是加载它们。 注意：这只能在1.0.1+（提交sha-1：6da3411ced）
+
+			高级选项：在Nuke OCIO节点中，您通常希望预览“跨镜头（across shots）”（通常用于reference等）。
+			您可以使用“上下文”菜单覆盖每个节点中的env-vars。 
+			例如，如果你知道正在使用$ SHOT，在上下文key1中你应该指定'SHOT'，
+			而value1指定要使用的镜头（例如dev.lookdev）。 
+			你也可以使用表达式，说出从[metadata“input / filename”]解析一个镜头名称
+
+			高级选项：如果您正在编写自己的OCIO集成代码，则如果未找到每个镜头的lut，getProcessor将失败，
+			您可能想要将此错误与其他OCIO错误区分开来。 因此，我们提供OCIO :: ExceptionMissingFile，
+			可以显式捕获（这可以使用OCIO :: DisplayTransform :: setLooksOverride（））。 我希望图像flipbook应用程序使用这种方法。
