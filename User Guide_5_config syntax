@@ -549,5 +549,108 @@ OpenColorIO是主要控制的核心配置文件，通常命名为config.ocio
 	#----------------------#
 	# Available transforms #
 	#----------------------#
+		-------------------
+		AllocationTransform
+		-------------------
+			从reference space转换到由vars指定的范围：
+			Keys:
+				1：allocation
+				2：vars
+				3：direction
 
+		------------
+		CDLTransform
+		------------
+			Applies an ASC CDL compliant grade
+			Keys：
+				1：slope
+				2：offset
+				3：power
+				4：sat
+				5：direction
 
+		-------------------
+		ColorSpaceTransform
+		-------------------
+			Transforms from src colorspace to dst colorspace.
+			keys：
+				1：src
+				2：dst
+				3：direction
+
+		-----------------
+		ExponentTransform
+		-----------------
+			Raises pixel values to a given power (often referred to as “gamma”)
+			================================================
+			!<ExponentTransform> {value: [1.8, 1.8, 1.8, 1]}
+			keys：
+				1：value
+				2：direction
+
+		-------------
+		FileTransform
+		-------------
+			Applies a lookup table (LUT)
+			Keys：
+				1：src
+				2：cccid
+				3：interpolation
+				4：direction
+
+		--------------
+		GroupTransform
+		--------------
+			Combines multiple transforms into one.
+			=======================================================
+			colorspaces:
+			  - !<ColorSpace>
+			    name: adx10
+
+			    [...]
+
+			    to_reference: !<GroupTransform>
+			      children:
+			        - !<FileTransform> {src: adx_adx10_to_cdd.spimtx}
+			        - !<FileTransform> {src: adx_cdd_to_cid.spimtx}
+			A group transform is accepted anywhere a “regular” transform is.
+
+		------------
+		LogTransform
+		------------
+			Applies a mathematical logarithm with a given base to the pixel values.
+			（将给定基数的数学对数应用于像素值。）
+			Keys：
+				1：base
+
+		-------------
+		LookTransform
+		-------------
+			Applies a named look
+
+		---------------
+		MatrixTransform
+		---------------
+			Applies a matrix transform to the pixel values
+			Keys：
+				1：matrix
+				2：offset
+				3：direction
+
+		------------------
+		TruelightTransform
+		------------------
+			Applies a transform from a Truelight profile.
+			Keys：
+				1：config_root
+				2：profile
+				3：camera
+				4：input_display
+				5：recorder
+				6：print
+				7：lamp
+				8：output_camera
+				9：display
+				10：cube_input
+				11：direction
+			Node：此转换要求使用Truelight SDK编译OCIO。
